@@ -202,7 +202,10 @@
   .dot.up{background:var(--up);} .dot.out{background:var(--out);} .dot.across{background:var(--across);} .dot.both{background:linear-gradient(135deg,var(--up) 50%,var(--out) 50%);}
   .term .d { font-size: 12.5px; color: var(--ink-soft); line-height: 1.5; }
 
-  footer { margin-top: 48px; padding-top: 20px; border-top: 1px solid var(--line); font-size: 12px; color: var(--ink-faint); }
+  .caveat { margin-top: 34px; border: 1px solid var(--line); border-left: 3px solid var(--up); border-radius: 10px; background: var(--panel); padding: 14px 17px; font-size: 13px; color: var(--ink-soft); line-height: 1.55; }
+  .caveat b { color: var(--ink); font-weight: 600; }
+  .caveat .mono { color: var(--up); }
+  footer { margin-top: 28px; padding-top: 20px; border-top: 1px solid var(--line); font-size: 12px; color: var(--ink-faint); }
   footer .mono { color: var(--ink-soft); }
 
   @media (prefers-reduced-motion: reduce) { .tier, .bar .fill { transition: none !important; } }
@@ -259,6 +262,10 @@
 
   <h2 class="section-title">Vocabulary of the fabric</h2>
   <div class="gloss" id="gloss"></div>
+
+  <div class="caveat">
+    <b>A note on NVLink.</b> This walkthrough uses NVIDIA&rsquo;s names — <span class="mono">NVLink</span>, <span class="mono">NVSwitch</span>, <span class="mono">NVL72</span>, <span class="mono">NVL576</span> — because they&rsquo;re the most public, but the <em>pattern</em> is vendor-neutral. Other accelerators build their scale-up domains over different fabrics: AMD Instinct over <b>Infinity Fabric</b>, Google TPUs over <b>ICI</b> (inter-chip interconnect) in torus pods, AWS Trainium over <b>NeuronLink</b>, and the open <b>UALink</b> standard aims to give any vendor an NVLink-class fabric. The scale-out and scale-across tiers are already broadly vendor-neutral — InfiniBand, Ethernet / RoCE, and Ultra Ethernet.
+  </div>
 
   <footer>
     <span class="mono">XPU</span> = any accelerator (GPU / TPU / NPU). Sizes, counts, latencies and bandwidths are representative of current-generation (2024–25) systems and vary by vendor and configuration — read them as orders of magnitude, not datasheet values. <b>Power</b> figures are rough facility estimates (≈120 kW per 72-GPU rack incl. cooling &amp; networking): a hall ≈ 65 MW, a campus ≈ 300 MW, a full region ≈ 2 GW — the last comparable to a mid-size city or a large power plant.
