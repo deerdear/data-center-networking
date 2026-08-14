@@ -1,0 +1,548 @@
+<meta charset="utf-8" />
+<title>Scale-Up vs Scale-Out — the XPU networking hierarchy</title>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<style>
+  :root {
+    --bg:        #f5f7fa;
+    --panel:     #ffffff;
+    --panel-2:   #eef1f6;
+    --ink:       #12161f;
+    --ink-soft:  #4c5566;
+    --ink-faint: #8a93a6;
+    --line:      #d6dbe4;
+    --line-soft: #e6eaf0;
+    --up:     #b8721a;   --up-bg:  #f6ead6;
+    --out:    #128a9c;   --out-bg: #daf0f3;
+    --across: #6f4fb0;   --across-bg: #e9e2f6;
+    --grid:   rgba(18,22,31,.05);
+    --shadow: 0 1px 2px rgba(18,22,31,.06), 0 8px 30px rgba(18,22,31,.06);
+    color-scheme: light;
+  }
+  :root:not([data-theme="light"]) {
+    @media (prefers-color-scheme: dark) {
+      --bg:#0b0e14; --panel:#12161f; --panel-2:#171c27;
+      --ink:#e8ecf3; --ink-soft:#a2acbd; --ink-faint:#6b7688;
+      --line:#262d3a; --line-soft:#1b212c;
+      --up:#e8a04a; --up-bg:#2a2013;
+      --out:#3fb9c9; --out-bg:#0f2429;
+      --across:#9b7bd4; --across-bg:#1e1830;
+      --grid: rgba(255,255,255,.045);
+      --shadow: 0 1px 2px rgba(0,0,0,.3), 0 12px 40px rgba(0,0,0,.35);
+      color-scheme: dark;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg:#0b0e14; --panel:#12161f; --panel-2:#171c27;
+    --ink:#e8ecf3; --ink-soft:#a2acbd; --ink-faint:#6b7688;
+    --line:#262d3a; --line-soft:#1b212c;
+    --up:#e8a04a; --up-bg:#2a2013;
+    --out:#3fb9c9; --out-bg:#0f2429;
+    --across:#9b7bd4; --across-bg:#1e1830;
+    --grid: rgba(255,255,255,.045);
+    --shadow: 0 1px 2px rgba(0,0,0,.3), 0 12px 40px rgba(0,0,0,.35);
+    color-scheme: dark;
+  }
+
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    line-height: 1.55; -webkit-font-smoothing: antialiased;
+  }
+  .mono { font-family: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace; }
+  .wrap { max-width: 1080px; margin: 0 auto; padding: clamp(20px, 5vw, 56px) clamp(16px, 4vw, 40px) 72px; }
+
+  header { margin-bottom: 28px; }
+  .eyebrow {
+    font-family: ui-monospace, Menlo, monospace; font-size: 12px; letter-spacing: .18em;
+    text-transform: uppercase; color: var(--ink-faint); margin: 0 0 14px;
+    display: flex; align-items: center; gap: 10px;
+  }
+  .eyebrow::before { content: ""; width: 26px; height: 1px; background: var(--ink-faint); display: inline-block; }
+  h1 {
+    font-family: ui-monospace, "JetBrains Mono", Menlo, monospace; font-weight: 650;
+    letter-spacing: -.01em; font-size: clamp(26px, 4.6vw, 44px); line-height: 1.08;
+    margin: 0 0 16px; text-wrap: balance;
+  }
+  h1 .u { color: var(--up); } h1 .o { color: var(--out); }
+  .lede { font-size: clamp(15px, 1.6vw, 18px); color: var(--ink-soft); max-width: 62ch; margin: 0; }
+  .lede b { color: var(--ink); font-weight: 600; }
+
+  /* ---------- ZOOM STAGE ---------- */
+  .zoom { margin: 30px 0 8px; }
+  .stage {
+    position: relative; width: 100%; aspect-ratio: 16 / 9; max-height: 60vh;
+    border: 1px solid var(--line); border-radius: 16px; overflow: hidden;
+    background:
+      radial-gradient(circle, var(--grid) 1px, transparent 1.4px) 0 0 / 26px 26px,
+      var(--panel);
+    box-shadow: var(--shadow); cursor: grab; touch-action: none;
+  }
+  .stage:active { cursor: grabbing; }
+  .stage:focus-visible { outline: 2px solid var(--out); outline-offset: 3px; }
+  .layer {
+    position: absolute; left: 50%; top: 50%; width: 1000px; --detail: 1;
+    transform-origin: 0 0; will-change: transform, opacity; pointer-events: none;
+  }
+  .layer[data-t="up"]     { --tint: var(--up);     --tint-bg: var(--up-bg); }
+  .layer[data-t="out"]    { --tint: var(--out);    --tint-bg: var(--out-bg); }
+  .layer[data-t="across"] { --tint: var(--across); --tint-bg: var(--across-bg); }
+  .layer svg { display: block; width: 100%; height: auto; overflow: visible; }
+  .diag-chip { fill: var(--panel-2); stroke: var(--line); stroke-width: 2; }
+  .diag-tint { fill: var(--tint); }
+  .diag-tint-soft { fill: var(--tint-bg); stroke: var(--tint); stroke-width: 2; }
+  .diag-line { stroke: var(--line); fill: none; }
+  .diag-tline { stroke: var(--tint); fill: none; }
+  /* highlighted slot where the child nests: a soft filled bay BEHIND the child (no dashed
+     outline to cross it), shown only on the level currently in focus via --detail */
+  .diag-ring { fill: var(--tint); fill-opacity: .16; stroke: var(--tint); stroke-opacity: .5; stroke-width: 2; opacity: var(--detail, 1); }
+  /* in-diagram text fades out on levels that aren't in focus, so only readable labels show */
+  .glbl { fill: var(--ink); font-family: ui-monospace, Menlo, monospace; font-weight: 650; opacity: var(--detail, 1); }
+  .glbl-soft { fill: var(--ink-soft); font-family: ui-monospace, Menlo, monospace; opacity: var(--detail, 1); }
+  .glbl-tint { fill: var(--tint); font-family: ui-monospace, Menlo, monospace; font-weight: 650; opacity: var(--detail, 1); }
+
+  /* HUD */
+  .hud {
+    position: absolute; left: 14px; top: 13px; pointer-events: none;
+    display: flex; flex-direction: column; gap: 2px;
+    background: color-mix(in srgb, var(--panel) 82%, transparent);
+    border: 1px solid var(--line); border-radius: 10px; padding: 10px 13px;
+    backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px);
+    max-width: min(62%, 340px);
+  }
+  .hud .scale { font-family: ui-monospace, Menlo, monospace; font-size: clamp(18px, 3.4vw, 26px); font-weight: 650; color: var(--ink); letter-spacing: -.02em; font-variant-numeric: tabular-nums; line-height: 1.1; }
+  .hud .scale small { color: var(--ink-faint); font-weight: 400; font-size: .5em; letter-spacing: .06em; }
+  .hud .lname { font-family: ui-monospace, Menlo, monospace; font-size: 13px; font-weight: 650; margin-top: 4px; }
+  .hud .lname[data-t="up"] { color: var(--up); } .hud .lname[data-t="out"] { color: var(--out); } .hud .lname[data-t="across"] { color: var(--across); }
+  .hud .lmeta { font-size: 11.5px; color: var(--ink-soft); font-family: ui-monospace, Menlo, monospace; }
+  .hud .lmeta b { color: var(--ink); font-weight: 600; }
+
+  /* ruler */
+  .ruler { position: absolute; right: 16px; bottom: 14px; pointer-events: none; text-align: right; }
+  .ruler .bar { height: 7px; border-left: 2px solid var(--ink-soft); border-right: 2px solid var(--ink-soft); border-bottom: 2px solid var(--ink-soft); width: 120px; }
+  .ruler .rlbl { font-family: ui-monospace, Menlo, monospace; font-size: 11px; color: var(--ink-soft); margin-top: 3px; font-variant-numeric: tabular-nums; }
+
+  /* controls */
+  .controls { display: flex; align-items: center; gap: 12px; margin-top: 14px; }
+  .zbtn {
+    width: 38px; height: 38px; flex: none; border-radius: 10px; border: 1px solid var(--line);
+    background: var(--panel); color: var(--ink); font-size: 20px; line-height: 1; cursor: pointer;
+    display: grid; place-items: center; transition: border-color .15s, background .15s;
+    font-family: ui-monospace, Menlo, monospace;
+  }
+  .zbtn:hover { border-color: var(--ink-faint); }
+  .zbtn:focus-visible { outline: 2px solid var(--out); outline-offset: 2px; }
+  .track-wrap { position: relative; flex: 1; height: 38px; display: flex; align-items: center; }
+  #zrange { -webkit-appearance: none; appearance: none; width: 100%; height: 5px; border-radius: 3px; background: var(--line); outline: none; margin: 0; }
+  #zrange::-webkit-slider-thumb { -webkit-appearance: none; width: 18px; height: 18px; border-radius: 50%; background: var(--out); border: 3px solid var(--panel); box-shadow: 0 0 0 1px var(--out); cursor: pointer; }
+  #zrange::-moz-range-thumb { width: 15px; height: 15px; border-radius: 50%; background: var(--out); border: 3px solid var(--panel); box-shadow: 0 0 0 1px var(--out); cursor: pointer; }
+  .stops { position: absolute; left: 0; right: 0; top: 30px; height: 16px; pointer-events: none; }
+  .stop { position: absolute; transform: translateX(-50%); pointer-events: auto; cursor: pointer; background: none; border: none; padding: 4px 3px 0; color: var(--ink-faint); font-family: ui-monospace, Menlo, monospace; font-size: 10px; letter-spacing: .02em; white-space: nowrap; transition: color .15s; }
+  .stop::before { content: ""; display: block; width: 2px; height: 6px; background: var(--ink-faint); margin: 0 auto 3px; border-radius: 1px; transition: background .15s, height .15s; }
+  .stop:hover { color: var(--ink); } .stop:hover::before { background: var(--ink-soft); }
+  .stop.on { color: var(--ink); } .stop.on::before { background: var(--tone); height: 9px; }
+  .stop[data-t="up"] { --tone: var(--up); } .stop[data-t="out"] { --tone: var(--out); } .stop[data-t="across"] { --tone: var(--across); }
+  .hint { font-size: 12px; color: var(--ink-faint); margin: 30px 0 0; text-align: center; }
+  .hint .mono { color: var(--ink-soft); }
+
+  /* ---------- LADDER (tier jump) ---------- */
+  .ladder { display: grid; gap: 10px; grid-template-columns: repeat(3, 1fr); margin: 40px 0 0; }
+  @media (max-width: 620px) { .ladder { grid-template-columns: 1fr; } }
+  .tier {
+    text-align: left; background: var(--panel); border: 1px solid var(--line); border-radius: 12px;
+    padding: 13px 15px; cursor: pointer; color: inherit; font: inherit;
+    transition: border-color .16s, box-shadow .16s, transform .16s;
+    display: flex; flex-direction: column; gap: 4px;
+  }
+  .tier:hover { transform: translateY(-2px); box-shadow: var(--shadow); }
+  .tier:focus-visible { outline: 2px solid var(--tint); outline-offset: 2px; }
+  .tier[data-t="up"]{--tint:var(--up);--tint-bg:var(--up-bg);} .tier[data-t="out"]{--tint:var(--out);--tint-bg:var(--out-bg);} .tier[data-t="across"]{--tint:var(--across);--tint-bg:var(--across-bg);}
+  .tier.active { border-color: var(--tint); box-shadow: 0 0 0 1px var(--tint); }
+  .tier .tn { display: flex; align-items: center; gap: 8px; font-family: ui-monospace, Menlo, monospace; font-weight: 650; font-size: 14.5px; }
+  .tier .tn .d { width: 9px; height: 9px; border-radius: 2px; background: var(--tint); flex: none; }
+  .tier.active .tn { color: var(--tint); }
+  .tier .ts { font-size: 12px; color: var(--ink-soft); }
+  .tier .tr { font-family: ui-monospace, Menlo, monospace; font-size: 10.5px; color: var(--tint); background: var(--tint-bg); padding: 2px 7px; border-radius: 5px; align-self: flex-start; margin-top: 2px; }
+
+  /* ---------- DETAIL ---------- */
+  .detail { margin-top: 18px; border: 1px solid var(--line); border-top: 3px solid var(--tint); border-radius: 14px; background: var(--panel); box-shadow: var(--shadow); padding: clamp(18px, 3vw, 26px); }
+  .detail[data-t="up"]{--tint:var(--up);--tint-bg:var(--up-bg);} .detail[data-t="out"]{--tint:var(--out);--tint-bg:var(--out-bg);} .detail[data-t="across"]{--tint:var(--across);--tint-bg:var(--across-bg);}
+  .detail-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px 14px; }
+  .detail-head h2 { font-family: ui-monospace, Menlo, monospace; font-size: 19px; font-weight: 650; margin: 0; color: var(--tint); letter-spacing: -.01em; }
+  .detail-head .q { font-size: 13.5px; color: var(--ink-soft); }
+  .detail-desc { margin: 10px 0 22px; color: var(--ink-soft); font-size: 14.5px; max-width: 68ch; }
+  .detail-desc b { color: var(--ink); font-weight: 600; }
+  .specs { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 1px; background: var(--line-soft); border: 1px solid var(--line-soft); border-radius: 10px; overflow: hidden; }
+  .spec { background: var(--panel); padding: 12px 14px; }
+  .spec .k { font-family: ui-monospace, Menlo, monospace; font-size: 10.5px; letter-spacing: .08em; text-transform: uppercase; color: var(--ink-faint); margin-bottom: 5px; }
+  .spec .v { font-size: 14px; color: var(--ink); font-variant-numeric: tabular-nums; }
+  .bwrow { margin-top: 22px; }
+  .bwrow .k { font-family: ui-monospace, Menlo, monospace; font-size: 10.5px; letter-spacing: .08em; text-transform: uppercase; color: var(--ink-faint); margin-bottom: 10px; }
+  .bar { display: grid; grid-template-columns: 92px 1fr auto; align-items: center; gap: 12px; margin-bottom: 8px; font-size: 12.5px; }
+  .bar .name { font-family: ui-monospace, Menlo, monospace; color: var(--ink-soft); }
+  .bar .track { display: block; height: 10px; background: var(--panel-2); border-radius: 5px; overflow: hidden; }
+  .bar .fill { display: block; height: 100%; border-radius: 5px; width: 0; transition: width .7s cubic-bezier(.2,.7,.2,1); }
+  .bar .fill.up{background:var(--up);} .bar .fill.out{background:var(--out);} .bar .fill.across{background:var(--across);}
+  .bar .num { font-family: ui-monospace, Menlo, monospace; color: var(--ink); font-variant-numeric: tabular-nums; }
+  .bar.dim { opacity: .5; }
+  .bwrow .note { font-size: 11.5px; color: var(--ink-faint); margin-top: 8px; }
+
+  .section-title { font-family: ui-monospace, Menlo, monospace; font-size: 12px; letter-spacing: .16em; text-transform: uppercase; color: var(--ink-faint); margin: 52px 0 16px; display: flex; align-items: center; gap: 12px; }
+  .section-title::after { content: ""; flex: 1; height: 1px; background: var(--line); }
+  .gloss { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 12px; }
+  .term { border: 1px solid var(--line); border-radius: 11px; background: var(--panel); padding: 13px 15px; }
+  .term .t { font-family: ui-monospace, Menlo, monospace; font-weight: 650; font-size: 13.5px; margin-bottom: 4px; display: flex; align-items: center; gap: 7px; }
+  .term .t .dot { width: 8px; height: 8px; border-radius: 2px; flex: none; }
+  .dot.up{background:var(--up);} .dot.out{background:var(--out);} .dot.across{background:var(--across);} .dot.both{background:linear-gradient(135deg,var(--up) 50%,var(--out) 50%);}
+  .term .d { font-size: 12.5px; color: var(--ink-soft); line-height: 1.5; }
+
+  footer { margin-top: 48px; padding-top: 20px; border-top: 1px solid var(--line); font-size: 12px; color: var(--ink-faint); }
+  footer .mono { color: var(--ink-soft); }
+
+  @media (prefers-reduced-motion: reduce) { .tier, .bar .fill { transition: none !important; } }
+</style>
+
+<div class="wrap">
+  <header>
+    <p class="eyebrow">XPU interconnect fabric</p>
+    <h1>Zoom out from one chip to a <span class="u">continent</span> of <span class="o">accelerators</span></h1>
+    <p class="lede">An <b>XPU</b> — GPU, TPU, any AI accelerator — rarely works alone. Training a large model means thousands of them acting as one machine, stitched together by tiers of interconnect that trade <b>bandwidth</b> for <b>reach</b>. Fly through the scales below: watch the physical size and XPU count explode while the wiring gets slower and wider at every level.</p>
+  </header>
+
+  <section class="zoom">
+    <div class="stage" id="stage" tabindex="0" role="slider" aria-label="Zoom level, from single XPU die to multi-datacenter" aria-valuemin="0" aria-valuemax="1000" aria-valuenow="70">
+      <div class="hud">
+        <div class="scale" id="hudScale">—</div>
+        <div class="lname" id="hudName">—</div>
+        <div class="lmeta" id="hudMeta">—</div>
+      </div>
+      <div class="ruler"><div class="bar"></div><div class="rlbl" id="rulerLbl">—</div></div>
+    </div>
+
+    <div class="controls">
+      <button class="zbtn" id="zin" aria-label="Zoom in">+</button>
+      <div class="track-wrap">
+        <input id="zrange" type="range" min="0" max="1000" value="70" aria-label="Scale" />
+        <div class="stops" id="stops"></div>
+      </div>
+      <button class="zbtn" id="zout" aria-label="Zoom out">&minus;</button>
+    </div>
+    <p class="hint">Scroll on the view, drag the slider, or tap a <span class="mono">stop</span> to fly between scales.</p>
+  </section>
+
+  <div class="ladder" role="tablist" aria-label="Networking tiers">
+    <button class="tier active" data-t="up" role="tab" aria-selected="true">
+      <span class="tn"><span class="d"></span>Scale-up</span>
+      <span class="ts">A few XPUs share memory over a dense switch.</span>
+      <span class="tr">8 → 576 XPUs · rack-scale (NVL72 / NVL576)</span>
+    </button>
+    <button class="tier" data-t="out" role="tab" aria-selected="false">
+      <span class="tn"><span class="d"></span>Scale-out</span>
+      <span class="ts">Nodes talk through a switched network fabric.</span>
+      <span class="tr">1k–100k+ XPUs · one datacenter</span>
+    </button>
+    <button class="tier" data-t="across" role="tab" aria-selected="false">
+      <span class="tn"><span class="d"></span>Scale-across</span>
+      <span class="ts">Whole clusters sync over long-haul links.</span>
+      <span class="tr">multi-region · 10s–100s km</span>
+    </button>
+  </div>
+
+  <section class="detail" id="detail" data-t="up" aria-live="polite"></section>
+
+  <h2 class="section-title">Vocabulary of the fabric</h2>
+  <div class="gloss" id="gloss"></div>
+
+  <footer>
+    <span class="mono">XPU</span> = any accelerator (GPU / TPU / NPU). Sizes and counts are representative of current-generation (2024–25) systems and vary by vendor and configuration — read them as orders of magnitude, not datasheet values.
+  </footer>
+</div>
+
+<script>
+  "use strict";
+  const reduce = matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+  /* ---------- zoom levels: w = real-world size across, in metres ---------- */
+  // Every level nests its child at its own geometric centre (500,320): the highlighted
+  // child-slot is drawn dead-centre, so a level is centred in its parent AND centres its child.
+  const C = [500, 320];
+  const LEVELS = [
+    { key:"die",    t:"up",     name:"XPU die + package",      w:0.055,  count:"1 XPU",          ic:"on-package · HBM, die-to-die",     focus:C },
+    { key:"tray",   t:"up",     name:"Compute tray",           w:0.45,   count:"8 XPUs",         ic:"NVLink / UALink",                  focus:C },
+    { key:"rack",   t:"up",     name:"Rack · NVL72 domain",    w:2.2,    count:"72 XPUs",        ic:"NVSwitch crossbar (NVL72)",        focus:C },
+    { key:"nvl576", t:"up",     name:"NVL576 · scale-up domain", w:6.5,  count:"576 XPUs",      ic:"NVLink switch fabric · Rubin Ultra", focus:C },
+    { key:"pod",    t:"out",    name:"Pod · row of racks",     w:16,     count:"~2,000 XPUs",    ic:"leaf / spine · rail-optimized",    focus:C },
+    { key:"hall",   t:"out",    name:"Datacenter hall",        w:140,    count:"~40,000 XPUs",   ic:"InfiniBand / Ethernet fabric",     focus:C },
+    { key:"campus", t:"out",    name:"Campus · several halls",  w:2000,  count:"~200,000 XPUs",  ic:"site backbone · intra-DC optics",  focus:C },
+    { key:"metro",  t:"across", name:"Multi-site region",      w:140000, count:"1,000,000+ XPUs", ic:"DCI · long-haul optics",          focus:C },
+  ];
+  const TINT = { up:"var(--up)", out:"var(--out)", across:"var(--across)" };
+
+  /* ---------- layer graphics (authored in a 1000×640 box) ---------- */
+  function rects(n, cols, x0, y0, cw, ch, gx, gy, cls){
+    let s = "";
+    for (let i=0;i<n;i++){ const r=Math.floor(i/cols), c=i%cols;
+      s += `<rect class="${cls}" x="${x0+c*(cw+gx)}" y="${y0+r*(ch+gy)}" width="${cw}" height="${ch}" rx="${Math.min(4,cw/4)}"/>`; }
+    return s;
+  }
+  const GFX = {
+    die: `
+      <rect class="diag-chip" x="300" y="120" width="400" height="400" rx="16"/>
+      <rect class="diag-tint-soft" x="250" y="180" width="42" height="110" rx="5"/>
+      <rect class="diag-tint-soft" x="250" y="330" width="42" height="110" rx="5"/>
+      <rect class="diag-tint-soft" x="708" y="180" width="42" height="110" rx="5"/>
+      <rect class="diag-tint-soft" x="708" y="330" width="42" height="110" rx="5"/>
+      <rect class="diag-tint" x="378" y="198" width="244" height="244" rx="10"/>
+      <text class="glbl" x="500" y="332" text-anchor="middle" font-size="60" fill="#fff">XPU</text>
+      <text class="glbl" x="500" y="565" text-anchor="middle" font-size="30">one accelerator</text>
+      <text class="glbl-soft" x="271" y="470" text-anchor="middle" font-size="19">HBM</text>
+      <text class="glbl-soft" x="729" y="470" text-anchor="middle" font-size="19">HBM</text>`,
+    tray: `
+      <rect class="diag-chip" x="225" y="214" width="550" height="212" rx="16"/>
+      ${(()=>{let s="";
+        [320,430,570,680].forEach(x=> s+=`<rect class="diag-tint" x="${x-48}" y="232" width="96" height="52" rx="6"/>`);
+        [380,500,620].forEach(x=> s+=`<rect class="diag-tint" x="${x-48}" y="356" width="96" height="52" rx="6"/>`);
+        return s;})()}
+      <rect class="diag-tint" x="452" y="292" width="96" height="56" rx="7"/>
+      <rect class="diag-ring" x="444" y="284" width="112" height="72" rx="9"/>
+      <text class="glbl" x="500" y="466" text-anchor="middle" font-size="30">compute tray · 8 XPU + NVLink</text>`,
+    rack: `
+      <rect class="diag-chip" x="360" y="38" width="280" height="564" rx="14"/>
+      <rect class="diag-tint-soft" x="384" y="52" width="232" height="24" rx="5"/>
+      <text class="glbl-tint" x="500" y="70" text-anchor="middle" font-size="16">NVSwitch spine</text>
+      ${rects(9,1, 384, 82, 232, 44, 0, 10, "diag-tint")}
+      <rect class="diag-ring" x="378" y="292" width="244" height="56" rx="6"/>
+      <text class="glbl" x="500" y="628" text-anchor="middle" font-size="30">rack · 72 XPU scale-up domain</text>`,
+    nvl576: `
+      <rect class="diag-line" x="128" y="200" width="744" height="248" rx="14" stroke-width="2"/>
+      <rect class="diag-tint-soft" x="300" y="96" width="180" height="28" rx="6"/>
+      <rect class="diag-tint-soft" x="520" y="96" width="180" height="28" rx="6"/>
+      <text class="glbl-tint" x="500" y="80" text-anchor="middle" font-size="18">NVLink switch spine</text>
+      ${(()=>{let s="";const cols=[[157,56],[229,56],[301,56],[373,56],[445,110],[571,56],[643,56],[715,56],[787,56]];
+        cols.forEach(([x,w])=>{ const cxx=x+w/2;
+          s+=`<rect class="diag-chip" x="${x}" y="218" width="${w}" height="212" rx="6"/>`;
+          s+=`<line class="diag-tline" x1="${cxx}" y1="218" x2="${cxx<440?400:600}" y2="124" stroke-width="1.4"/>`;});
+        return s;})()}
+      <rect class="diag-ring" x="437" y="210" width="126" height="228" rx="10"/>
+      <text class="glbl" x="500" y="492" text-anchor="middle" font-size="30">NVL576 · 576 GPUs in one NVLink domain</text>`,
+    pod: `
+      <rect class="diag-tint-soft" x="300" y="88" width="180" height="30" rx="6"/>
+      <rect class="diag-tint-soft" x="520" y="88" width="180" height="30" rx="6"/>
+      <text class="glbl-tint" x="500" y="70" text-anchor="middle" font-size="18">leaf / spine switches</text>
+      ${(()=>{let s="";const n=11,x0=94,w=52,g=24;
+        for(let i=0;i<n;i++){const x=x0+i*(w+g);
+          s+=`<rect class="diag-chip" x="${x}" y="195" width="${w}" height="250" rx="5"/>`;
+          s+=`<line class="diag-tline" x1="${x+w/2}" y1="195" x2="${x<400?390:610}" y2="118" stroke-width="1.6"/>`;}
+        return s;})()}
+      <rect class="diag-ring" x="352" y="185" width="296" height="270" rx="12"/>
+      <text class="glbl" x="500" y="500" text-anchor="middle" font-size="30">pod · a row of racks on one leaf/spine</text>`,
+    hall: `
+      ${(()=>{let s="";const nx=7,ny=3,x0=94,y0=120,cw=104,ch=122,gx=14,gy=16;
+        for(let j=0;j<ny;j++)for(let i=0;i<nx;i++){const x=x0+i*(cw+gx),y=y0+j*(ch+gy),feat=(i===3&&j===1);
+          s+=`<rect class="${feat?'diag-tint-soft':'diag-chip'}" x="${x}" y="${y}" width="${cw}" height="${ch}" rx="7"/>`;
+          for(let t=0;t<4;t++) s+=`<rect class="diag-line" x="${x+14+t*22}" y="${y+18}" width="14" height="${ch-36}" rx="2" stroke-width="1.2"/>`;}
+        return s;})()}
+      <rect class="diag-ring" x="443" y="253" width="114" height="132" rx="9"/>
+      <text class="glbl" x="500" y="560" text-anchor="middle" font-size="30">datacenter hall · a floor of pods on one fabric</text>`,
+    campus: `
+      ${(()=>{let s="";const nx=11,ny=5,x0=60,y0=104,cw=71,ch=77,gx=10,gy=12;
+        for(let j=0;j<ny;j++)for(let i=0;i<nx;i++){const x=x0+i*(cw+gx),y=y0+j*(ch+gy),feat=(i===5&&j===2);
+          s+=`<rect class="${feat?'diag-tint-soft':'diag-chip'}" x="${x}" y="${y}" width="${cw}" height="${ch}" rx="6"/>`;
+          for(let t=0;t<3;t++) s+=`<line class="diag-line" x1="${x+13+t*15}" y1="${y+12}" x2="${x+13+t*15}" y2="${y+ch-12}" stroke-width="1.2"/>`;}
+        return s;})()}
+      <rect class="diag-ring" x="460" y="277" width="81" height="87" rx="8"/>
+      <text class="glbl" x="500" y="596" text-anchor="middle" font-size="30">campus · a site full of datacenter halls</text>`,
+    metro: `
+      ${(()=>{let s="";const nx=17,ny=9,x0=62,y0=114,cw=44,ch=37,gx=8,gy=10;
+        for(let j=0;j<ny;j++)for(let i=0;i<nx;i++){const x=x0+i*(cw+gx),y=y0+j*(ch+gy),feat=(i===8&&j===4);
+          s+=`<rect class="${feat?'diag-tint-soft':'diag-chip'}" x="${x}" y="${y}" width="${cw}" height="${ch}" rx="4"/>`;}
+        return s;})()}
+      <rect class="diag-ring" x="471" y="293" width="54" height="47" rx="6"/>
+      <text class="glbl-soft" x="500" y="102" text-anchor="middle" font-size="18">≈ 100 km · long-haul DCI between sites</text>
+      <text class="glbl" x="500" y="576" text-anchor="middle" font-size="30">a region of datacenters · one training run</text>`,
+  };
+
+  const stage = document.getElementById("stage");
+  LEVELS.forEach(L => {
+    const d = document.createElement("div");
+    d.className = "layer"; d.dataset.t = L.t; L.el = d;
+    d.innerHTML = `<svg viewBox="0 0 1000 640" aria-hidden="true">${GFX[L.key]}</svg>`;
+    stage.appendChild(d);
+  });
+
+  /* ---------- zoom math ---------- */
+  const LOG_MIN = Math.log10(0.02), LOG_MAX = Math.log10(400000);
+  const FOCUS = 0.62;                       // a level "fills" ~62% of the view at its stop
+  const logFocus = L => Math.log10(L.w / FOCUS);
+  let logM = logFocus(LEVELS[0]);           // start on the die
+
+  const clamp = (v,a,b) => Math.max(a, Math.min(b, v));
+  const toSlider = lg => Math.round((lg - LOG_MIN)/(LOG_MAX - LOG_MIN)*1000);
+  const fromSlider = v => LOG_MIN + v/1000*(LOG_MAX - LOG_MIN);
+
+  function fmtM(m){
+    if (m >= 1000){ const km=m/1000; return (km>=100?Math.round(km):km>=10?km.toFixed(0):km.toFixed(1))+" km"; }
+    if (m >= 1)    return (m>=100?Math.round(m):m>=10?m.toFixed(0):m.toFixed(1))+" m";
+    if (m >= 0.01) return Math.round(m*100)+" cm";
+    return Math.round(m*1000)+" mm";
+  }
+
+  const els = {
+    scale: document.getElementById("hudScale"), name: document.getElementById("hudName"),
+    meta: document.getElementById("hudMeta"), ruler: document.getElementById("rulerLbl"),
+    range: document.getElementById("zrange"),
+  };
+
+  function focusLevel(m){
+    let best = LEVELS[0], bd = Infinity;
+    for (const L of LEVELS){ const d = Math.abs(Math.log10(L.w) - Math.log10(m*FOCUS)); if (d<bd){bd=d;best=L;} }
+    return best;
+  }
+
+  function paint(){
+    const vw = stage.clientWidth, m = Math.pow(10, logM);
+    for (const L of LEVELS){
+      const f = L.w / m;                    // fraction of viewport width it occupies
+      const x = Math.log10(f / FOCUS);      // 0 at focus; >0 bigger than the view, <0 smaller
+      // asymmetric fade: outer (bigger) layers flood the screen so they fade out fast;
+      // inner (smaller) layers shrink to a harmless dot, so they can linger for depth.
+      const A = 0.3, B = x >= 0 ? 0.95 : 1.9;
+      const op = clamp(1 - (Math.abs(x) - A) / (B - A), 0, 1);
+      const el = L.el;
+      if (op <= 0.03){ el.style.display = "none"; continue; }
+      el.style.display = "block";
+      el.style.opacity = op.toFixed(3);
+      // only the near-focus level shows its highlight bay + text labels; neighbours go plain
+      el.style.setProperty("--detail", clamp(1 - (Math.abs(x) - 0.16) / 0.34, 0, 1).toFixed(3));
+      // place the level so its focus point (where the child nests) sits at screen centre,
+      // so a parent assembles around the child's real slot instead of fading in concentrically
+      const k = f * vw / 1000, u = L.focus[0], v = L.focus[1];
+      el.style.transform = `translate(${(-u*k).toFixed(2)}px, ${(-v*k).toFixed(2)}px) scale(${k.toFixed(4)})`;
+      el.style.zIndex = String(Math.round(60 - Math.log10(f)*18));
+    }
+    const F = focusLevel(m);
+    els.scale.innerHTML = `${fmtM(m)} <small>ACROSS</small>`;
+    els.name.textContent = F.name; els.name.dataset.t = F.t;
+    els.meta.innerHTML = `<b>${F.count}</b> · ${F.ic}`;
+    els.ruler.textContent = fmtM(m * (120 / vw));      // ruler bar is 120px wide
+    els.range.value = toSlider(logM);
+    stage.setAttribute("aria-valuenow", toSlider(logM));
+    stage.setAttribute("aria-valuetext", `${fmtM(m)} across — ${F.name}`);
+    syncTier(F.t);
+    syncStops(F.key);
+  }
+
+  /* ---------- fly animation ---------- */
+  let raf = 0;
+  function flyTo(targetLog){
+    targetLog = clamp(targetLog, LOG_MIN, LOG_MAX);
+    if (reduce){ logM = targetLog; paint(); return; }
+    cancelAnimationFrame(raf);
+    const start = logM, t0 = performance.now(), dur = 620;
+    (function step(now){
+      const p = Math.min(1, (now - t0)/dur);
+      const e = 1 - Math.pow(1-p, 3);
+      logM = start + (targetLog - start)*e;
+      paint();
+      if (p < 1) raf = requestAnimationFrame(step);
+    })(t0);
+  }
+  function nudge(dLog){ cancelAnimationFrame(raf); logM = clamp(logM + dLog, LOG_MIN, LOG_MAX); paint(); }
+
+  /* ---------- inputs ---------- */
+  stage.addEventListener("wheel", e => { e.preventDefault(); nudge(e.deltaY * 0.0016); }, { passive:false });
+  els.range.addEventListener("input", () => { cancelAnimationFrame(raf); logM = fromSlider(+els.range.value); paint(); });
+  document.getElementById("zin").addEventListener("click", () => flyTo(logM - 0.55));
+  document.getElementById("zout").addEventListener("click", () => flyTo(logM + 0.55));
+  stage.addEventListener("keydown", e => {
+    const k = e.key;
+    if (k==="ArrowUp"||k==="ArrowRight"){ e.preventDefault(); nudge(-0.12); }
+    else if (k==="ArrowDown"||k==="ArrowLeft"){ e.preventDefault(); nudge(0.12); }
+  });
+  // drag vertically to zoom
+  let dragY = null;
+  stage.addEventListener("pointerdown", e => { dragY = e.clientY; stage.setPointerCapture(e.pointerId); });
+  stage.addEventListener("pointermove", e => { if (dragY===null) return; cancelAnimationFrame(raf); logM = clamp(logM + (e.clientY - dragY)*0.006, LOG_MIN, LOG_MAX); dragY = e.clientY; paint(); });
+  stage.addEventListener("pointerup", () => dragY = null);
+  stage.addEventListener("pointercancel", () => dragY = null);
+  addEventListener("resize", paint);
+
+  /* ---------- stops under the slider ---------- */
+  const stopsEl = document.getElementById("stops");
+  const STOP_LABELS = { die:"XPU", rack:"Rack", nvl576:"NVL576", hall:"Datacenter", metro:"Region" };
+  LEVELS.forEach(L => {
+    if (!(L.key in STOP_LABELS)) return;
+    const b = document.createElement("button");
+    b.className = "stop"; b.dataset.t = L.t; b.dataset.key = L.key;
+    b.style.left = (toSlider(logFocus(L))/10) + "%";
+    b.textContent = STOP_LABELS[L.key];
+    b.addEventListener("click", () => flyTo(logFocus(L)));
+    stopsEl.appendChild(b);
+    L.stopEl = b;
+  });
+  function syncStops(key){ LEVELS.forEach(L => { if (L.stopEl) L.stopEl.classList.toggle("on", L.key===key); }); }
+
+  /* ---------- tier detail + ladder ---------- */
+  const TIERS = {
+    up: { name:"Scale-up", q:"make a few XPUs act like one big one",
+      desc:"Inside a node or rack, XPUs are wired to each other through a dedicated <b>switch fabric</b> (NVSwitch, UALink, Infinity Fabric). Links are so fast that XPUs read and write each other&rsquo;s memory almost as if it were local — <b>memory semantics</b>, not networking. Tensor- and expert-parallel shards live here, because they exchange data every layer. The domain keeps growing: 8-GPU trays → 72-GPU racks (NVL72) → <b>NVL576</b>, 576 GPUs in a single NVLink domain (Rubin Ultra).",
+      specs:[["Interconnect","NVLink · NVSwitch · UALink"],["Per-XPU BW","~0.9–1.8 TB/s"],["Latency","sub-microsecond"],["Domain size","72 → 576 XPUs"],["Semantics","shared memory / load-store"],["Media","copper, in-package"]] },
+    out: { name:"Scale-out", q:"connect thousands of nodes into one cluster",
+      desc:"Beyond the rack, nodes connect through a switched <b>network</b> — InfiniBand or high-speed Ethernet (RoCEv2, Ultra Ethernet) — usually a rail-optimized fat-tree. XPUs move data by <b>message passing</b> over RDMA NICs. Per-link bandwidth drops ~10–20&times; versus scale-up, so collective algorithms and topology matter enormously. Data- and pipeline-parallel traffic rides this tier.",
+      specs:[["Interconnect","InfiniBand · RoCEv2 / Ethernet"],["Per-XPU BW","~400–800 Gb/s"],["Latency","~1–3 microseconds"],["Domain size","1k–100k+ XPUs"],["Semantics","message passing / RDMA"],["Media","optical, rail-optimized"]] },
+    across: { name:"Scale-across", q:"train across multiple datacenters",
+      desc:"When one building runs out of power, training spans <b>sites</b>. Clusters exchange gradients and checkpoints over long-haul optical / DCI links where <b>distance sets the latency</b> (light in fiber ≈ 5 µs per km). Algorithms turn hierarchical and asynchronous to hide the round-trip. This tier is young and moving fast as frontier runs outgrow single datacenters.",
+      specs:[["Interconnect","DCI · long-haul WAN optics"],["Per-XPU BW","shared, Gb/s–Tb/s aggregate"],["Latency","~milliseconds"],["Domain size","multi-DC / multi-region"],["Semantics","async / hierarchical collectives"],["Media","long-haul fiber, 10s–100s km"]] },
+  };
+  const BW = { up:100, out:8, across:0.8 }, BWLABEL = { up:"~1.8 TB/s", out:"~800 Gb/s", across:"~10s Gb/s" };
+  const detail = document.getElementById("detail");
+  const tabs = [...document.querySelectorAll(".tier")];
+  let curTier = null;
+
+  function renderDetail(t){
+    const d = TIERS[t];
+    detail.dataset.t = t;
+    detail.innerHTML = `
+      <div class="detail-head"><h2>${d.name}</h2><span class="q">— ${d.q}</span></div>
+      <p class="detail-desc">${d.desc}</p>
+      <div class="specs">${d.specs.map(([k,v])=>`<div class="spec"><div class="k">${k}</div><div class="v">${v}</div></div>`).join("")}</div>
+      <div class="bwrow"><div class="k">Per-XPU bandwidth, relative</div>
+        ${["up","out","across"].map(k=>`<div class="bar ${k===t?"":"dim"}"><span class="name">${TIERS[k].name}</span><span class="track"><span class="fill ${k}" data-w="${BW[k]}"></span></span><span class="num">${BWLABEL[k]}</span></div>`).join("")}
+        <p class="note">Bar length is on a compressed scale — a scale-up link really is roughly an order of magnitude fatter than scale-out, which is why the chattiest parallelism stays closest.</p>
+      </div>`;
+    requestAnimationFrame(()=>detail.querySelectorAll(".fill").forEach(f=>f.style.width=Math.max(3,+f.dataset.w)+"%"));
+  }
+  function syncTier(t){
+    if (t === curTier) return;
+    curTier = t;
+    tabs.forEach(b=>{ const on=b.dataset.t===t; b.classList.toggle("active",on); b.setAttribute("aria-selected",on?"true":"false"); });
+    renderDetail(t);
+  }
+  // clicking a tier flies the zoom to that tier's representative level
+  const TIER_LEVEL = { up:"rack", out:"hall", across:"metro" };
+  tabs.forEach(b => b.addEventListener("click", () => {
+    const L = LEVELS.find(x => x.key === TIER_LEVEL[b.dataset.t]);
+    flyTo(logFocus(L));
+  }));
+
+  /* ---------- glossary ---------- */
+  const GLOSS = [
+    ["NVLink / NVSwitch","up","NVIDIA&rsquo;s scale-up link and crossbar switch. Every XPU in a domain gets direct high-bandwidth access to every other."],
+    ["NVL72 / NVL576","up","Named NVLink scale-up domains — 72 GPUs (Blackwell) and 576 GPUs (Rubin Ultra) wired into one memory-sharing domain. Bigger domain = more GPUs one hop apart."],
+    ["UALink","up","Open industry standard for scale-up accelerator interconnect — a vendor-neutral alternative to NVLink."],
+    ["Infinity Fabric","up","AMD&rsquo;s coherent interconnect tying XPUs (and CPUs) together within a node."],
+    ["InfiniBand","out","Low-latency lossless network for scale-out clusters; NDR/XDR generations, with RDMA built in."],
+    ["RoCEv2 / Ultra Ethernet","out","RDMA over Ethernet. Ultra Ethernet is a new spec tuning standard Ethernet for AI collective traffic."],
+    ["Rail-optimized fat-tree","out","A topology where each XPU has its own uplink &ldquo;rail,&rdquo; so same-rank XPUs across nodes reach each other in few hops."],
+    ["Collectives","both","Group operations — all-reduce, all-gather, all-to-all — that sync tensors across XPUs. The traffic these networks exist to carry."],
+    ["All-to-all","both","Every XPU sends a slice to every other. The bandwidth-hungry pattern behind Mixture-of-Experts routing."],
+    ["SHARP","out","In-network reduction: the switch itself sums data mid-flight, roughly halving the traffic an all-reduce generates."],
+    ["Memory vs message","both","Scale-up moves data by reading remote memory; scale-out moves it by sending messages. The line between the two tiers."],
+    ["NIC / SuperNIC","out","Network interface (often a DPU) that puts an XPU&rsquo;s traffic onto the scale-out fabric via RDMA."],
+    ["DCI","across","Data-center interconnect — the long-haul optical links carrying traffic between buildings and regions."],
+  ];
+  document.getElementById("gloss").innerHTML = GLOSS.map(([t,c,d])=>`<div class="term"><div class="t"><span class="dot ${c}"></span>${t}</div><div class="d">${d}</div></div>`).join("");
+
+  paint();
+</script>
