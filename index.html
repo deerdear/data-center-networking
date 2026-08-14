@@ -104,12 +104,12 @@
 
   /* HUD */
   .hud {
-    position: absolute; left: 14px; top: 13px; pointer-events: none;
+    position: absolute; left: 14px; top: 13px; pointer-events: none; z-index: 300;
     display: flex; flex-direction: column; gap: 2px;
-    background: color-mix(in srgb, var(--panel) 82%, transparent);
+    background: color-mix(in srgb, var(--panel) 92%, transparent);
     border: 1px solid var(--line); border-radius: 10px; padding: 10px 13px;
     backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px);
-    max-width: min(62%, 340px);
+    max-width: min(74%, 410px);
   }
   .hud .scale { font-family: ui-monospace, Menlo, monospace; font-size: clamp(18px, 3.4vw, 26px); font-weight: 650; color: var(--ink); letter-spacing: -.02em; font-variant-numeric: tabular-nums; line-height: 1.1; }
   .hud .scale small { color: var(--ink-faint); font-weight: 400; font-size: .5em; letter-spacing: .06em; }
@@ -117,9 +117,14 @@
   .hud .lname[data-t="up"] { color: var(--up); } .hud .lname[data-t="out"] { color: var(--out); } .hud .lname[data-t="across"] { color: var(--across); }
   .hud .lmeta { font-size: 11.5px; color: var(--ink-soft); font-family: ui-monospace, Menlo, monospace; }
   .hud .lmeta b { color: var(--ink); font-weight: 600; }
+  .hstats { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 9px; }
+  .hstat { border: 1px solid var(--line); border-radius: 7px; padding: 4px 8px 5px; background: var(--panel-2); }
+  .hstat .hk { font-family: ui-monospace, Menlo, monospace; font-size: 8.5px; letter-spacing: .1em; text-transform: uppercase; color: var(--ink-faint); }
+  .hstat .hv { font-family: ui-monospace, Menlo, monospace; font-size: 12.5px; color: var(--ink); font-variant-numeric: tabular-nums; line-height: 1.2; }
+  .hstat.pw .hv { color: var(--up); }
 
   /* ruler */
-  .ruler { position: absolute; right: 16px; bottom: 14px; pointer-events: none; text-align: right; }
+  .ruler { position: absolute; right: 16px; bottom: 14px; pointer-events: none; text-align: right; z-index: 300; }
   .ruler .bar { height: 7px; border-left: 2px solid var(--ink-soft); border-right: 2px solid var(--ink-soft); border-bottom: 2px solid var(--ink-soft); width: 120px; }
   .ruler .rlbl { font-family: ui-monospace, Menlo, monospace; font-size: 11px; color: var(--ink-soft); margin-top: 3px; font-variant-numeric: tabular-nums; }
 
@@ -216,6 +221,7 @@
         <div class="scale" id="hudScale">—</div>
         <div class="lname" id="hudName">—</div>
         <div class="lmeta" id="hudMeta">—</div>
+        <div class="hstats" id="hudStats"></div>
       </div>
       <div class="ruler"><div class="bar"></div><div class="rlbl" id="rulerLbl">—</div></div>
     </div>
@@ -255,7 +261,7 @@
   <div class="gloss" id="gloss"></div>
 
   <footer>
-    <span class="mono">XPU</span> = any accelerator (GPU / TPU / NPU). Sizes and counts are representative of current-generation (2024–25) systems and vary by vendor and configuration — read them as orders of magnitude, not datasheet values.
+    <span class="mono">XPU</span> = any accelerator (GPU / TPU / NPU). Sizes, counts, latencies and bandwidths are representative of current-generation (2024–25) systems and vary by vendor and configuration — read them as orders of magnitude, not datasheet values. <b>Power</b> figures are rough facility estimates (≈120 kW per 72-GPU rack incl. cooling &amp; networking): a hall ≈ 65 MW, a campus ≈ 300 MW, a full region ≈ 2 GW — the last comparable to a mid-size city or a large power plant.
   </footer>
 </div>
 
@@ -267,15 +273,17 @@
   // Every level nests its child at its own geometric centre (500,320): the highlighted
   // child-slot is drawn dead-centre, so a level is centred in its parent AND centres its child.
   const C = [500, 320];
+  //  lat = one-hop latency at this tier · bw = characteristic per-GPU link bandwidth
+  //  power = rough facility draw (72 GPUs/rack ≈ 120 kW/rack, incl. cooling & networking)
   const LEVELS = [
-    { key:"die",    t:"up",     name:"XPU die + package",      w:0.055,  count:"1 XPU",          ic:"on-package · HBM, die-to-die",     focus:C },
-    { key:"tray",   t:"up",     name:"Compute tray",           w:0.45,   count:"8 XPUs",         ic:"NVLink / UALink",                  focus:C },
-    { key:"rack",   t:"up",     name:"Rack · NVL72 domain",    w:2.2,    count:"72 XPUs",        ic:"NVSwitch crossbar (NVL72)",        focus:C },
-    { key:"nvl576", t:"up",     name:"NVL576 · scale-up domain", w:6.5,  count:"576 XPUs",      ic:"NVLink switch fabric · Rubin Ultra", focus:C },
-    { key:"pod",    t:"out",    name:"Pod · row of racks",     w:16,     count:"~2,000 XPUs",    ic:"leaf / spine · rail-optimized",    focus:C },
-    { key:"hall",   t:"out",    name:"Datacenter hall",        w:140,    count:"~40,000 XPUs",   ic:"InfiniBand / Ethernet fabric",     focus:C },
-    { key:"campus", t:"out",    name:"Campus · several halls",  w:2000,  count:"~200,000 XPUs",  ic:"site backbone · intra-DC optics",  focus:C },
-    { key:"metro",  t:"across", name:"Multi-site region",      w:140000, count:"1,000,000+ XPUs", ic:"DCI · long-haul optics",          focus:C },
+    { key:"die",    t:"up",     name:"XPU die + package",      w:0.055,  count:"1 XPU",          ic:"on-package · HBM, die-to-die",     lat:"~60 ns",   bw:"~8 TB/s",   power:"~1.5 kW", focus:C },
+    { key:"tray",   t:"up",     name:"Compute tray",           w:0.45,   count:"8 XPUs",         ic:"NVLink / UALink",                  lat:"~0.4 µs",  bw:"~1.8 TB/s", power:"~14 kW",  focus:C },
+    { key:"rack",   t:"up",     name:"Rack · NVL72 domain",    w:2.2,    count:"72 XPUs",        ic:"NVSwitch crossbar (NVL72)",        lat:"~1 µs",    bw:"~1.8 TB/s", power:"~120 kW", focus:C },
+    { key:"nvl576", t:"up",     name:"NVL576 · scale-up domain", w:6.5,  count:"576 XPUs",      ic:"NVLink switch fabric · Rubin Ultra", lat:"~1–2 µs",  bw:"~3.6 TB/s", power:"~1 MW",   focus:C },
+    { key:"pod",    t:"out",    name:"Pod · row of racks",     w:16,     count:"~2,000 XPUs",    ic:"leaf / spine · rail-optimized",    lat:"~1–3 µs",  bw:"~800 Gb/s", power:"~3 MW",   focus:C },
+    { key:"hall",   t:"out",    name:"Datacenter hall",        w:140,    count:"~40,000 XPUs",   ic:"InfiniBand / Ethernet fabric",     lat:"~3–5 µs",  bw:"~400 Gb/s", power:"~65 MW",  focus:C },
+    { key:"campus", t:"out",    name:"Campus · several halls",  w:2000,  count:"~200,000 XPUs",  ic:"site backbone · intra-DC optics",  lat:"~5–10 µs", bw:"~400 Gb/s", power:"~300 MW", focus:C },
+    { key:"metro",  t:"across", name:"Multi-site region",      w:140000, count:"1,000,000+ XPUs", ic:"DCI · long-haul optics",          lat:"~1–5 ms",  bw:"Tb/s DCI",  power:"~2 GW",   focus:C },
   ];
   const TINT = { up:"var(--up)", out:"var(--out)", across:"var(--across)" };
 
@@ -391,7 +399,7 @@
   const els = {
     scale: document.getElementById("hudScale"), name: document.getElementById("hudName"),
     meta: document.getElementById("hudMeta"), ruler: document.getElementById("rulerLbl"),
-    range: document.getElementById("zrange"),
+    range: document.getElementById("zrange"), stats: document.getElementById("hudStats"),
   };
 
   function focusLevel(m){
@@ -425,6 +433,9 @@
     els.scale.innerHTML = `${fmtM(m)} <small>ACROSS</small>`;
     els.name.textContent = F.name; els.name.dataset.t = F.t;
     els.meta.innerHTML = `<b>${F.count}</b> · ${F.ic}`;
+    els.stats.innerHTML = [
+      ["latency", F.lat, ""], ["link bw", F.bw, ""], ["power", F.power, "pw"],
+    ].filter(s => s[1]).map(([k,v,c]) => `<div class="hstat ${c}"><div class="hk">${k}</div><div class="hv">${v}</div></div>`).join("");
     els.ruler.textContent = fmtM(m * (120 / vw));      // ruler bar is 120px wide
     els.range.value = toSlider(logM);
     stage.setAttribute("aria-valuenow", toSlider(logM));
